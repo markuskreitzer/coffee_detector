@@ -85,6 +85,16 @@ Run against the default microphone without sending a notification:
 
 Pass a source name from `pactl list short sources` to select a particular microphone.
 
+Run a finite microphone health check before relying on live alerts:
+
+```sh
+.venv/bin/python coffee_detector.py --input-device default --check-input 10
+```
+
+The command reports RMS level, peak level, and the percentage of active samples. It exits with an error when ffmpeg produces no frames or the stream is sustained digital silence. Live monitoring applies the same checks continuously, and the systemd service restarts after an unhealthy input failure.
+
+The ASUS X202E deployment, audio controls, printer-safe recovery procedure, and service checks are documented in [ASUS X202E deployment](docs/ASUS_X202E.md).
+
 ## macOS microphone
 
 macOS will request microphone access on the first run. List the devices recognized by ffmpeg with:

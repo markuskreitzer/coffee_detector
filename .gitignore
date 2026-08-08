@@ -1,10 +1,12 @@
 .ruff_cache/
 .venv/
 __pycache__/
+.DS_Store
 .env
 .env.*
 !.env.example
 *.log
+*.qta
 data/
 recordings/
 /coffee_roaster_beep.m4a

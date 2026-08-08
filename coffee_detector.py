@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import selectors
 import subprocess
 import sys
 import urllib.error
@@ -15,9 +16,10 @@ from pathlib import Path
 
 import numpy as np
 
-
 SAMPLE_RATE = 16_000
 BLOCK_SIZE = 2_048
+INPUT_ACTIVITY_FLOOR = 1e-7
+MINIMUM_ACTIVE_SAMPLE_FRACTION = 0.05
 
 
 @dataclass(frozen=True)
@@ -34,10 +36,10 @@ class DetectionConfig:
 
 
 class BeepCadenceDetector:
-    def __init__(self, config: DetectionConfig = DetectionConfig()):
-        self.config = config
+    def __init__(self, config: DetectionConfig | None = None):
+        self.config = config if config is not None else DetectionConfig()
         self._tone_started_at: float | None = None
-        self._beeps: deque[float] = deque(maxlen=config.required_beeps)
+        self._beeps: deque[float] = deque(maxlen=self.config.required_beeps)
 
     def observe(self, samples: np.ndarray, timestamp: float) -> bool:
         tone_present = self._is_tone_present(samples)
@@ -47,7 +49,11 @@ class BeepCadenceDetector:
             duration = timestamp - self._tone_started_at
             started_at = self._tone_started_at
             self._tone_started_at = None
-            if self.config.minimum_beep_seconds <= duration <= self.config.maximum_beep_seconds:
+            if (
+                self.config.minimum_beep_seconds
+                <= duration
+                <= self.config.maximum_beep_seconds
+            ):
                 return self._record_beep(started_at)
         return False
 
@@ -57,14 +63,22 @@ class BeepCadenceDetector:
         duration = timestamp - self._tone_started_at
         started_at = self._tone_started_at
         self._tone_started_at = None
-        if self.config.minimum_beep_seconds <= duration <= self.config.maximum_beep_seconds:
+        if (
+            self.config.minimum_beep_seconds
+            <= duration
+            <= self.config.maximum_beep_seconds
+        ):
             return self._record_beep(started_at)
         return False
 
     def _record_beep(self, started_at: float) -> bool:
         if self._beeps:
             gap = started_at - self._beeps[-1]
-            if not self.config.minimum_gap_seconds <= gap <= self.config.maximum_gap_seconds:
+            if (
+                not self.config.minimum_gap_seconds
+                <= gap
+                <= self.config.maximum_gap_seconds
+            ):
                 self._beeps.clear()
         self._beeps.append(started_at)
         if len(self._beeps) < self.config.required_beeps:
@@ -82,7 +96,9 @@ class BeepCadenceDetector:
         spectrum = np.abs(np.fft.rfft(windowed)) ** 2
         frequencies = np.fft.rfftfreq(BLOCK_SIZE, 1 / SAMPLE_RATE)
 
-        tone_band = np.abs(frequencies - self.config.target_hz) <= self.config.tolerance_hz
+        tone_band = (
+            np.abs(frequencies - self.config.target_hz) <= self.config.tolerance_hz
+        )
         background_band = (
             (frequencies >= self.config.target_hz - 1_100)
             & (frequencies <= self.config.target_hz + 1_100)
@@ -93,11 +109,47 @@ class BeepCadenceDetector:
         background_power = float(spectrum[background_band].sum())
         normalization = float(np.hanning(BLOCK_SIZE).sum() ** 2)
         tone_dbfs = 10 * math.log10(max(tone_power / normalization, 1e-20))
-        tone_ratio_db = 10 * math.log10(max(tone_power, 1e-20) / max(background_power, 1e-20))
+        tone_ratio_db = 10 * math.log10(
+            max(tone_power, 1e-20) / max(background_power, 1e-20)
+        )
         return (
             tone_dbfs >= self.config.minimum_tone_dbfs
             and tone_ratio_db >= self.config.minimum_tone_ratio_db
         )
+
+
+class InputHealthMonitor:
+    def __init__(
+        self,
+        window_seconds: float = 10.0,
+        activity_floor: float = INPUT_ACTIVITY_FLOOR,
+        minimum_active_fraction: float = MINIMUM_ACTIVE_SAMPLE_FRACTION,
+    ):
+        self.window_samples = max(1, round(window_seconds * SAMPLE_RATE))
+        self.activity_floor = activity_floor
+        self.minimum_active_fraction = minimum_active_fraction
+        self._blocks: deque[tuple[int, int]] = deque()
+        self._sample_count = 0
+        self._active_count = 0
+
+    def observe(self, samples: np.ndarray) -> bool | None:
+        sample_count = len(samples)
+        active_count = int(np.count_nonzero(np.abs(samples) > self.activity_floor))
+        self._blocks.append((sample_count, active_count))
+        self._sample_count += sample_count
+        self._active_count += active_count
+
+        while (
+            self._blocks
+            and self._sample_count - self._blocks[0][0] >= self.window_samples
+        ):
+            removed_samples, removed_active = self._blocks.popleft()
+            self._sample_count -= removed_samples
+            self._active_count -= removed_active
+
+        if self._sample_count < self.window_samples:
+            return None
+        return self._active_count / self._sample_count >= self.minimum_active_fraction
 
 
 def ffmpeg_command(source: str | None, input_device: str) -> list[str]:
@@ -112,25 +164,48 @@ def ffmpeg_command(source: str | None, input_device: str) -> list[str]:
     return command
 
 
-def audio_blocks(source: str | None, input_device: str):
+def audio_blocks(source: str | None, input_device: str, read_timeout: float = 10.0):
     command = ffmpeg_command(source, input_device)
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
     except FileNotFoundError as error:
         raise RuntimeError("ffmpeg is required but was not found on PATH") from error
 
     assert process.stdout is not None
     block_bytes = BLOCK_SIZE * np.dtype("<f4").itemsize
+    pending = bytearray()
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
     exhausted = False
     try:
-        while data := process.stdout.read(block_bytes):
-            samples = np.frombuffer(data, dtype="<f4")
-            if len(samples):
-                yield samples
-        exhausted = True
+        while True:
+            if not selector.select(read_timeout):
+                raise RuntimeError(
+                    f"audio input produced no data for {read_timeout:g} seconds"
+                )
+            data = os.read(process.stdout.fileno(), block_bytes - len(pending))
+            if not data:
+                exhausted = True
+                if pending:
+                    yield np.frombuffer(bytes(pending), dtype="<f4")
+                break
+            pending.extend(data)
+            if len(pending) == block_bytes:
+                yield np.frombuffer(bytes(pending), dtype="<f4")
+                pending.clear()
     finally:
+        selector.close()
         if not exhausted and process.poll() is None:
             process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
         process.stdout.close()
         return_code = process.wait()
         assert process.stderr is not None
@@ -164,24 +239,89 @@ def send_pushover(message: str, title: str) -> None:
     except urllib.error.URLError as error:
         raise RuntimeError(f"Pushover request failed: {error.reason}") from error
     if result.get("status") != 1:
-        raise RuntimeError(f"Pushover returned an error: {result.get('errors', result)}")
+        raise RuntimeError(
+            f"Pushover returned an error: {result.get('errors', result)}"
+        )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Detect the coffee roaster warm-up beep and send a Pushover alert."
     )
-    parser.add_argument("--file", type=Path, help="Analyze an audio file instead of a microphone")
+    parser.add_argument(
+        "--file", type=Path, help="Analyze an audio file instead of a microphone"
+    )
     parser.add_argument(
         "--input-device",
         default=":MacBook Pro Microphone" if sys.platform == "darwin" else "default",
         help="ffmpeg audio input device (default: %(default)s)",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Print alerts instead of sending them")
-    parser.add_argument("--once", action="store_true", help="Exit after the first detection")
-    parser.add_argument("--cooldown", type=float, default=120, help="Seconds between alerts")
-    parser.add_argument("--required-beeps", type=int, default=3, help="Beep count required for detection")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print alerts instead of sending them"
+    )
+    parser.add_argument(
+        "--once", action="store_true", help="Exit after the first detection"
+    )
+    parser.add_argument(
+        "--cooldown", type=float, default=120, help="Seconds between alerts"
+    )
+    parser.add_argument(
+        "--required-beeps",
+        type=int,
+        default=3,
+        help="Beep count required for detection",
+    )
+    parser.add_argument(
+        "--audio-read-timeout",
+        type=float,
+        default=10,
+        help="Seconds to wait for microphone data (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--input-health-window",
+        type=float,
+        default=10,
+        help="Seconds used to reject silent microphone input (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--check-input",
+        type=float,
+        metavar="SECONDS",
+        help="Measure microphone health for a fixed duration and exit",
+    )
     return parser.parse_args()
+
+
+def check_audio_input(input_device: str, seconds: float, read_timeout: float) -> int:
+    target_samples = round(seconds * SAMPLE_RATE)
+    sample_count = 0
+    active_count = 0
+    sum_squares = 0.0
+    peak = 0.0
+
+    for block in audio_blocks(None, input_device, read_timeout):
+        remaining = target_samples - sample_count
+        samples = block[:remaining]
+        sample_count += len(samples)
+        active_count += int(np.count_nonzero(np.abs(samples) > INPUT_ACTIVITY_FLOOR))
+        float_samples = samples.astype(np.float64)
+        sum_squares += float(np.dot(float_samples, float_samples))
+        peak = max(peak, float(np.max(np.abs(samples))))
+        if sample_count >= target_samples:
+            break
+
+    if sample_count < target_samples:
+        raise RuntimeError("audio input ended before the input check completed")
+    active_fraction = active_count / sample_count
+    rms = math.sqrt(sum_squares / sample_count)
+    rms_dbfs = 20 * math.log10(max(rms, 1e-10))
+    print(
+        f"Input check: {seconds:g}s, RMS {rms_dbfs:.1f} dBFS, "
+        f"peak {peak:.6f}, active samples {active_fraction:.1%}"
+    )
+    if active_fraction < MINIMUM_ACTIVE_SAMPLE_FRACTION:
+        raise RuntimeError("microphone input is silent or invalid")
+    return 0
 
 
 def main() -> int:
@@ -192,17 +332,46 @@ def main() -> int:
     if args.file and not args.file.is_file():
         print(f"error: audio file not found: {args.file}", file=sys.stderr)
         return 2
+    if args.audio_read_timeout <= 0 or args.input_health_window <= 0:
+        print("error: audio timeout values must be positive", file=sys.stderr)
+        return 2
+    if args.check_input is not None and args.check_input <= 0:
+        print("error: --check-input must be positive", file=sys.stderr)
+        return 2
+    if args.file and args.check_input is not None:
+        print("error: --check-input cannot be combined with --file", file=sys.stderr)
+        return 2
 
     detector = BeepCadenceDetector(DetectionConfig(required_beeps=args.required_beeps))
     source = str(args.file) if args.file else None
     source_name = str(args.file) if args.file else f"microphone {args.input_device}"
-    print(f"Listening to {source_name} for the roaster warm-up beep...", flush=True)
 
     audio_time = 0.0
     last_alert = -math.inf
     try:
-        for block in audio_blocks(source, args.input_device):
-            if detector.observe(block, audio_time) and audio_time - last_alert >= args.cooldown:
+        if args.check_input is not None:
+            return check_audio_input(
+                args.input_device,
+                args.check_input,
+                args.audio_read_timeout,
+            )
+
+        print(f"Listening to {source_name} for the roaster warm-up beep...", flush=True)
+        input_health = (
+            InputHealthMonitor(window_seconds=args.input_health_window)
+            if source is None
+            else None
+        )
+        for block in audio_blocks(source, args.input_device, args.audio_read_timeout):
+            if input_health is not None and input_health.observe(block) is False:
+                raise RuntimeError(
+                    f"microphone input remained silent or invalid for "
+                    f"{args.input_health_window:g} seconds"
+                )
+            if (
+                detector.observe(block, audio_time)
+                and audio_time - last_alert >= args.cooldown
+            ):
                 message = "The coffee roaster is warmed up and ready."
                 if args.dry_run:
                     print(f"DRY RUN: {message}", flush=True)

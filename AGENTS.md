@@ -5,8 +5,11 @@
 - This project targets the Hottop Bean Roaster (1st Gen).
 - The deployed host is the Arch Linux laptop named `asus`.
 - The deployed checkout is `~/Projects/coffee_detector`.
+- The laptop model is ASUS X202E with a VIA VT1802 HDA codec.
 - Linux audio is provided by PipeWire through its PulseAudio compatibility layer.
 - The default source on `asus` is the built-in analog microphone.
+- `alsa-utils` and `alsa-tools` provide `arecord`, `amixer`, `alsactl`, and `hda-verb` for diagnostics.
+- The `shairport-sync-shairport-sync-1` container is intentionally stopped and is not part of this deployment.
 - The current implemented event is the 4.10 kHz warm-up beep cadence for `ready_for_beans`.
 - Planned events include roaster running, beans charged, first crack, second crack, and cooling.
 
@@ -43,6 +46,12 @@ pactl get-default-source
 pactl list short sources
 ```
 
+Verify that the microphone delivers real samples:
+
+```sh
+.venv/bin/python coffee_detector.py --input-device default --check-input 10
+```
+
 Follow detector logs:
 
 ```sh
@@ -65,6 +74,8 @@ journalctl --user -u coffee-detector.service -f
 - Do not place credentials in the repository or the systemd unit.
 - Confirm the Git working tree is clean before pulling or deploying changes.
 - Treat thresholds and models as specific to the Hottop Bean Roaster (1st Gen) and its deployment room until recordings prove portability.
+- Before rebooting `asus`, query Moonraker and confirm that `print_stats.state` is not `printing` or `paused`.
+- After an Arch kernel update, compare `uname -r` with `pacman -Q linux` and reboot only when the printer is idle.
 
 ## License
 

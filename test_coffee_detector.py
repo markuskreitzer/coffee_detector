@@ -1,8 +1,16 @@
+import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
-from coffee_detector import BLOCK_SIZE, SAMPLE_RATE, BeepCadenceDetector
+from coffee_detector import (
+    BLOCK_SIZE,
+    SAMPLE_RATE,
+    BeepCadenceDetector,
+    InputHealthMonitor,
+    audio_blocks,
+)
 
 
 def tone(frequency: float, amplitude: float = 0.5) -> np.ndarray:
@@ -56,6 +64,49 @@ class BeepCadenceDetectorTests(unittest.TestCase):
             self.assertFalse(detector.observe(signal, second))
             self.assertFalse(detector.observe(signal, second + 0.128))
             self.assertFalse(detector.observe(silence, second + 0.256))
+
+
+class InputHealthMonitorTests(unittest.TestCase):
+    def observe_window(
+        self, monitor: InputHealthMonitor, block: np.ndarray
+    ) -> bool | None:
+        result = None
+        for _ in range(10):
+            result = monitor.observe(block)
+            if result is not None:
+                return result
+        return result
+
+    def test_accepts_continuous_microphone_signal(self):
+        monitor = InputHealthMonitor(window_seconds=0.5)
+        signal = np.full(BLOCK_SIZE, 0.0001, dtype=np.float32)
+
+        self.assertTrue(self.observe_window(monitor, signal))
+
+    def test_rejects_digital_silence(self):
+        monitor = InputHealthMonitor(window_seconds=0.5)
+        silence = np.zeros(BLOCK_SIZE, dtype=np.float32)
+
+        self.assertFalse(self.observe_window(monitor, silence))
+
+    def test_rejects_sparse_clipped_artifacts(self):
+        monitor = InputHealthMonitor(window_seconds=0.5)
+        artifacts = np.zeros(BLOCK_SIZE, dtype=np.float32)
+        artifacts[:20] = 1.0
+
+        self.assertFalse(self.observe_window(monitor, artifacts))
+
+
+class AudioBlocksTests(unittest.TestCase):
+    @patch(
+        "coffee_detector.ffmpeg_command",
+        return_value=[sys.executable, "-c", "import time; time.sleep(1)"],
+    )
+    def test_times_out_when_input_produces_no_frames(self, _mock_command):
+        blocks = audio_blocks(None, "default", read_timeout=0.05)
+
+        with self.assertRaisesRegex(RuntimeError, "produced no data"):
+            next(blocks)
 
 
 if __name__ == "__main__":
