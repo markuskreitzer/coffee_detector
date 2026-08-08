@@ -92,7 +92,7 @@ class InputHealthMonitorTests(unittest.TestCase):
     def test_rejects_sparse_clipped_artifacts(self):
         monitor = InputHealthMonitor(window_seconds=0.5)
         artifacts = np.zeros(BLOCK_SIZE, dtype=np.float32)
-        artifacts[:20] = 1.0
+        artifacts[: BLOCK_SIZE // 10] = 1.0
 
         self.assertFalse(self.observe_window(monitor, artifacts))
 

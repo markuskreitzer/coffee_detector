@@ -31,7 +31,7 @@ cd ~/Projects/coffee_detector
 .venv/bin/python coffee_detector.py --input-device default --check-input 10
 ```
 
-A healthy check reports RMS and peak levels plus at least 5% active samples. The command fails when the stream produces no frames, sustained digital silence, or sparse clipped artifacts.
+A healthy check reports RMS and peak levels plus at least 20% active samples. The command fails when the stream produces no frames, sustained digital silence, or sparse clipped artifacts.
 
 Confirm the PipeWire source and active clients:
 
