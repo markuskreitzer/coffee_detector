@@ -1,0 +1,15 @@
+[Unit]
+Description=Coffee roaster acoustic event detector
+After=pipewire-pulse.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_DIR@
+EnvironmentFile=%h/.config/coffee-detector/env
+ExecStart=@PROJECT_DIR@/.venv/bin/python @PROJECT_DIR@/coffee_detector.py --input-device default
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

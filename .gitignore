@@ -1,0 +1,10 @@
+.ruff_cache/
+.venv/
+__pycache__/
+.env
+.env.*
+!.env.example
+*.log
+data/
+recordings/
+/coffee_roaster_beep.m4a
