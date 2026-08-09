@@ -10,6 +10,7 @@ from coffee_detector import (
     BeepCadenceDetector,
     InputHealthMonitor,
     audio_blocks,
+    measure_tone,
 )
 
 
@@ -64,6 +65,20 @@ class BeepCadenceDetectorTests(unittest.TestCase):
             self.assertFalse(detector.observe(signal, second))
             self.assertFalse(detector.observe(signal, second + 0.128))
             self.assertFalse(detector.observe(silence, second + 0.256))
+
+
+class ToneMeasurementTests(unittest.TestCase):
+    def test_reports_target_frequency_and_ratio(self):
+        measurement = measure_tone(tone(4_105))
+
+        self.assertAlmostEqual(measurement.peak_hz, 4_105, delta=10)
+        self.assertGreater(measurement.tone_ratio_db, 20)
+
+    def test_reports_off_target_frequency(self):
+        measurement = measure_tone(tone(3_200))
+
+        self.assertAlmostEqual(measurement.peak_hz, 3_200, delta=10)
+        self.assertLess(measurement.tone_ratio_db, 0)
 
 
 class InputHealthMonitorTests(unittest.TestCase):

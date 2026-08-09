@@ -93,6 +93,14 @@ Run a finite microphone health check before relying on live alerts:
 
 The command reports RMS level, peak level, and the percentage of active samples. It exits with an error when ffmpeg produces no frames or the stream is sustained digital silence. Live monitoring applies the same checks continuously, and the systemd service restarts after an unhealthy input failure.
 
+Measure the received warm-up tone without recording ambient audio or sending an alert:
+
+```sh
+.venv/bin/python coffee_detector.py --input-device default --diagnose-tone 15
+```
+
+The diagnosis reports the strongest frequency from 2-6 kHz, target-band level, target-to-background ratio, and the number of blocks accepted by the current tone threshold.
+
 The ASUS X202E deployment, audio controls, printer-safe recovery procedure, and service checks are documented in [ASUS X202E deployment](docs/ASUS_X202E.md).
 
 ## macOS microphone

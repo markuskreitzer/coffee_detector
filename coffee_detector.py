@@ -35,6 +35,13 @@ class DetectionConfig:
     required_beeps: int = 3
 
 
+@dataclass(frozen=True)
+class ToneMeasurement:
+    peak_hz: float
+    tone_dbfs: float
+    tone_ratio_db: float
+
+
 class BeepCadenceDetector:
     def __init__(self, config: DetectionConfig | None = None):
         self.config = config if config is not None else DetectionConfig()
@@ -87,35 +94,79 @@ class BeepCadenceDetector:
         return True
 
     def _is_tone_present(self, samples: np.ndarray) -> bool:
-        if len(samples) < BLOCK_SIZE:
-            samples = np.pad(samples, (0, BLOCK_SIZE - len(samples)))
-        elif len(samples) > BLOCK_SIZE:
-            samples = samples[:BLOCK_SIZE]
-
-        windowed = samples * np.hanning(BLOCK_SIZE)
-        spectrum = np.abs(np.fft.rfft(windowed)) ** 2
-        frequencies = np.fft.rfftfreq(BLOCK_SIZE, 1 / SAMPLE_RATE)
-
-        tone_band = (
-            np.abs(frequencies - self.config.target_hz) <= self.config.tolerance_hz
-        )
-        background_band = (
-            (frequencies >= self.config.target_hz - 1_100)
-            & (frequencies <= self.config.target_hz + 1_100)
-            & ~tone_band
-        )
-
-        tone_power = float(spectrum[tone_band].sum())
-        background_power = float(spectrum[background_band].sum())
-        normalization = float(np.hanning(BLOCK_SIZE).sum() ** 2)
-        tone_dbfs = 10 * math.log10(max(tone_power / normalization, 1e-20))
-        tone_ratio_db = 10 * math.log10(
-            max(tone_power, 1e-20) / max(background_power, 1e-20)
-        )
+        measurement = measure_tone(samples, self.config)
         return (
-            tone_dbfs >= self.config.minimum_tone_dbfs
-            and tone_ratio_db >= self.config.minimum_tone_ratio_db
+            measurement.tone_dbfs >= self.config.minimum_tone_dbfs
+            and measurement.tone_ratio_db >= self.config.minimum_tone_ratio_db
         )
+
+
+def measure_tone(
+    samples: np.ndarray, config: DetectionConfig | None = None
+) -> ToneMeasurement:
+    config = config if config is not None else DetectionConfig()
+    if len(samples) < BLOCK_SIZE:
+        samples = np.pad(samples, (0, BLOCK_SIZE - len(samples)))
+    elif len(samples) > BLOCK_SIZE:
+        samples = samples[:BLOCK_SIZE]
+
+    window = np.hanning(BLOCK_SIZE)
+    spectrum = np.abs(np.fft.rfft(samples * window)) ** 2
+    frequencies = np.fft.rfftfreq(BLOCK_SIZE, 1 / SAMPLE_RATE)
+
+    tone_band = np.abs(frequencies - config.target_hz) <= config.tolerance_hz
+    background_band = (
+        (frequencies >= config.target_hz - 1_100)
+        & (frequencies <= config.target_hz + 1_100)
+        & ~tone_band
+    )
+    analysis_band = (frequencies >= 2_000) & (frequencies <= 6_000)
+
+    tone_power = float(spectrum[tone_band].sum())
+    background_power = float(spectrum[background_band].sum())
+    normalization = float(window.sum() ** 2)
+    tone_dbfs = 10 * math.log10(max(tone_power / normalization, 1e-20))
+    tone_ratio_db = 10 * math.log10(
+        max(tone_power, 1e-20) / max(background_power, 1e-20)
+    )
+    analysis_frequencies = frequencies[analysis_band]
+    analysis_spectrum = spectrum[analysis_band]
+    peak_hz = float(analysis_frequencies[int(np.argmax(analysis_spectrum))])
+    return ToneMeasurement(peak_hz, tone_dbfs, tone_ratio_db)
+
+
+def diagnose_tone_input(
+    input_device: str, seconds: float, read_timeout: float
+) -> int:
+    target_samples = round(seconds * SAMPLE_RATE)
+    sample_count = 0
+    measurements: list[ToneMeasurement] = []
+    config = DetectionConfig()
+
+    for block in audio_blocks(None, input_device, read_timeout):
+        remaining = target_samples - sample_count
+        samples = block[:remaining]
+        sample_count += len(samples)
+        measurements.append(measure_tone(samples, config))
+        if sample_count >= target_samples:
+            break
+
+    if sample_count < target_samples:
+        raise RuntimeError("audio input ended before tone diagnosis completed")
+    strongest = max(measurements, key=lambda item: item.tone_dbfs)
+    best_ratio = max(item.tone_ratio_db for item in measurements)
+    matching_blocks = sum(
+        item.tone_dbfs >= config.minimum_tone_dbfs
+        and item.tone_ratio_db >= config.minimum_tone_ratio_db
+        for item in measurements
+    )
+    print(
+        f"Tone diagnosis: {seconds:g}s, strongest peak {strongest.peak_hz:.1f} Hz, "
+        f"target level {strongest.tone_dbfs:.1f} dBFS, "
+        f"best target ratio {best_ratio:.1f} dB, "
+        f"matching blocks {matching_blocks}/{len(measurements)}"
+    )
+    return 0
 
 
 class InputHealthMonitor:
@@ -289,6 +340,12 @@ def parse_args() -> argparse.Namespace:
         metavar="SECONDS",
         help="Measure microphone health for a fixed duration and exit",
     )
+    parser.add_argument(
+        "--diagnose-tone",
+        type=float,
+        metavar="SECONDS",
+        help="Measure the live target tone without recording audio",
+    )
     return parser.parse_args()
 
 
@@ -338,8 +395,20 @@ def main() -> int:
     if args.check_input is not None and args.check_input <= 0:
         print("error: --check-input must be positive", file=sys.stderr)
         return 2
+    if args.diagnose_tone is not None and args.diagnose_tone <= 0:
+        print("error: --diagnose-tone must be positive", file=sys.stderr)
+        return 2
     if args.file and args.check_input is not None:
         print("error: --check-input cannot be combined with --file", file=sys.stderr)
+        return 2
+    if args.file and args.diagnose_tone is not None:
+        print("error: --diagnose-tone cannot be combined with --file", file=sys.stderr)
+        return 2
+    if args.check_input is not None and args.diagnose_tone is not None:
+        print(
+            "error: --check-input cannot be combined with --diagnose-tone",
+            file=sys.stderr,
+        )
         return 2
 
     detector = BeepCadenceDetector(DetectionConfig(required_beeps=args.required_beeps))
@@ -353,6 +422,12 @@ def main() -> int:
             return check_audio_input(
                 args.input_device,
                 args.check_input,
+                args.audio_read_timeout,
+            )
+        if args.diagnose_tone is not None:
+            return diagnose_tone_input(
+                args.input_device,
+                args.diagnose_tone,
                 args.audio_read_timeout,
             )
 

@@ -43,6 +43,14 @@ cd ~/Projects/coffee_detector
 
 A healthy check reports RMS and peak levels plus at least 20% active samples. The command fails when the stream produces no frames, sustained digital silence, or sparse clipped artifacts.
 
+Measure a live warm-up beep without saving audio or sending an alert:
+
+```sh
+.venv/bin/python coffee_detector.py --input-device default --diagnose-tone 15
+```
+
+Play the beep during the measurement. Use the reported peak frequency, target-band level, target-to-background ratio, and matching-block count to calibrate the detector.
+
 Confirm the PipeWire source and active clients:
 
 ```sh
