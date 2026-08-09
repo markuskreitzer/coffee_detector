@@ -8,6 +8,7 @@ Type=simple
 WorkingDirectory=@PROJECT_DIR@
 EnvironmentFile=%h/.config/coffee-detector/env
 ExecStart=@PROJECT_DIR@/.venv/bin/python @PROJECT_DIR@/coffee_detector.py --input-device default
+ExecStartPost=/bin/sh -c 'sleep 1 && /usr/bin/sudo -n /usr/bin/hda-verb /dev/snd/hwC0D0 0x29 SET_PIN_WIDGET_CONTROL 0x24 >/dev/null && /usr/bin/sudo -n /usr/bin/hda-verb /dev/snd/hwC0D0 0x1e SET_CONNECT_SEL 2 >/dev/null'
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=5

@@ -8,6 +8,7 @@ The deployed laptop has this audio path:
 | --- | --- |
 | Laptop | ASUS X202E |
 | Codec | VIA VT1802 on HDA Intel PCH |
+| Microphone | External microphone on the analog combo jack |
 | PipeWire source | `alsa_input.pci-0000_00_1b.0.analog-stereo` |
 | Detector input | PulseAudio-compatible source `default` |
 | Detector service | `coffee-detector.service` |
@@ -21,6 +22,15 @@ sudo pacman -S --needed ffmpeg python alsa-utils alsa-tools
 ```
 
 The `shairport-sync-shairport-sync-1` Docker container is intentionally stopped. It is not required by Coffee Detector.
+
+The VIA codec exposes the combo-jack microphone through pin `0x29` and capture selector `0x1e`. PipeWire restores the internal-microphone route when a new capture stream opens. The user service waits for capture to start, then selects pin `0x29`, enables microphone bias, and changes selector `0x1e` to input `2`.
+
+The service uses non-interactive `sudo` for these two `hda-verb` operations. Confirm that they are authorized before installation:
+
+```sh
+sudo -n hda-verb /dev/snd/hwC0D0 0x29 GET_PIN_WIDGET_CONTROL 0
+sudo -n hda-verb /dev/snd/hwC0D0 0x1e GET_CONNECT_SEL 0
+```
 
 ## Input validation
 
@@ -73,7 +83,7 @@ systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.ser
 systemctl --user restart coffee-detector.service
 ```
 
-The detector exits with an error when ffmpeg stops delivering frames or the input health window contains insufficient real samples. The systemd unit restarts it after five seconds and force-stops an unresponsive audio process after five seconds.
+The detector exits with an error when ffmpeg stops delivering frames or the input health window contains insufficient real samples. The systemd unit restarts it after five seconds, reapplies the external-microphone route after every start, and force-stops an unresponsive audio process after five seconds.
 
 ## Printer-safe reboot check
 
