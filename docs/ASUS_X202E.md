@@ -73,7 +73,7 @@ systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.ser
 systemctl --user restart coffee-detector.service
 ```
 
-The detector exits with an error when ffmpeg stops delivering frames or the input health window contains insufficient real samples. The systemd unit restarts it after five seconds.
+The detector exits with an error when ffmpeg stops delivering frames or the input health window contains insufficient real samples. The systemd unit restarts it after five seconds and force-stops an unresponsive audio process after five seconds.
 
 ## Printer-safe reboot check
 

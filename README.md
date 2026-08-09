@@ -124,7 +124,7 @@ systemctl --user status coffee-detector.service
 journalctl --user -u coffee-detector.service -f
 ```
 
-The service runs while the desktop user session is active, restarts after failures, and uses PipeWire's default microphone.
+The service runs while the desktop user session is active, restarts after failures, uses PipeWire's default microphone, and force-stops an unresponsive audio process after five seconds.
 
 ## Security and recordings
 
