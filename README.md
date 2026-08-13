@@ -47,6 +47,41 @@ Run the unit tests:
 .venv/bin/python -m unittest -v
 ```
 
+## ESP32 detector
+
+The `esp32` firmware runs the warm-up beep detector and Pushover alert on an
+ESP32-WROOM-32 with one INMP441 microphone. It does not stream or store audio.
+The wiring matches the ESP32 baby-monitor prototype:
+
+| INMP441 | ESP32 |
+|---|---|
+| `VDD` | `3V3` |
+| `GND` | `GND` |
+| `SCK` | GPIO 32 |
+| `WS` | GPIO 25 |
+| `SD` | GPIO 33 |
+| `L/R` | `GND` |
+
+Generate the ignored firmware secret header from the deployed environment file,
+then build and upload through USB:
+
+```sh
+scripts/generate-esp32-secrets.sh
+PLATFORMIO_CORE_DIR="$PWD/.platformio" pio run -d esp32
+PLATFORMIO_CORE_DIR="$PWD/.platformio" pio run -d esp32 -t upload
+PLATFORMIO_CORE_DIR="$PWD/.platformio" pio device monitor -b 115200
+```
+
+On first boot, send this line through the serial monitor:
+
+```text
+WIFI your-ssid|your-password
+```
+
+The ESP32 stores the Wi-Fi values in NVS and restarts. Serial status shows the
+microphone RMS, target-tone ratio, accepted beeps, and the Pushover HTTP status.
+It never prints Wi-Fi or Pushover credentials.
+
 ## Configure Pushover
 
 Never commit credentials. The detector reads them from the process environment:

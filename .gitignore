@@ -10,3 +10,7 @@ __pycache__/
 data/
 recordings/
 /coffee_roaster_beep.m4a
+.pio/
+.platformio/
+esp32/include/secrets.h
+esp32/.env
