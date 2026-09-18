@@ -1,5 +1,7 @@
+import io
 import sys
 import unittest
+import urllib.parse
 from unittest.mock import patch
 
 import numpy as np
@@ -11,6 +13,7 @@ from coffee_detector import (
     InputHealthMonitor,
     audio_blocks,
     measure_tone,
+    send_pushover,
 )
 
 
@@ -110,6 +113,23 @@ class InputHealthMonitorTests(unittest.TestCase):
         artifacts[: BLOCK_SIZE // 10] = 1.0
 
         self.assertFalse(self.observe_window(monitor, artifacts))
+
+
+class PushoverTests(unittest.TestCase):
+    @patch.dict(
+        "os.environ",
+        {"PUSHOVER_COFFEE_TOKEN": "test-token", "PUSHOVER_USER": "test-user"},
+    )
+    @patch("coffee_detector.urllib.request.urlopen")
+    def test_sends_high_priority_without_emergency_repeats(self, mock_urlopen):
+        mock_urlopen.return_value = io.BytesIO(b'{"status":1}')
+        send_pushover("Ready", "Coffee roaster ready")
+        request = mock_urlopen.call_args.args[0]
+        payload = urllib.parse.parse_qs(request.data.decode())
+        self.assertEqual(payload["priority"], ["1"])
+        self.assertEqual(payload["message"], ["Ready"])
+        self.assertNotIn("retry", payload)
+        self.assertNotIn("expire", payload)
 
 
 class AudioBlocksTests(unittest.TestCase):

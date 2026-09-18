@@ -8,7 +8,7 @@ The deployed laptop has this audio path:
 | --- | --- |
 | Laptop | ASUS X202E |
 | Codec | VIA VT1802 on HDA Intel PCH |
-| Microphone | External microphone on the analog combo jack |
+| Microphone | Built-in digital microphone (codec pin `0x30`) |
 | PipeWire source | `alsa_input.pci-0000_00_1b.0.analog-stereo` |
 | Detector input | PulseAudio-compatible source `default` |
 | Detector service | `coffee-detector.service` |
@@ -23,14 +23,15 @@ sudo pacman -S --needed ffmpeg python alsa-utils alsa-tools
 
 The `shairport-sync-shairport-sync-1` Docker container is intentionally stopped. It is not required by Coffee Detector.
 
-The VIA codec exposes the combo-jack microphone through pin `0x29` and capture selector `0x1e`. PipeWire restores the internal-microphone route when a new capture stream opens. The user service waits for capture to start, then selects pin `0x29`, enables microphone bias, and changes selector `0x1e` to input `2`.
+The built-in microphone uses pin `0x30` and capture selector `0x1e`, input `4`.
+ALSA selects this route when capture starts. The service must not override it.
+The former `ExecStartPost` selected combo-jack input `2` (pin `0x29`), which
+recorded only noise when no external microphone was connected.
 
-The service uses non-interactive `sudo` for these two `hda-verb` operations. Confirm that they are authorized before installation:
-
-```sh
-sudo -n hda-verb /dev/snd/hwC0D0 0x29 GET_PIN_WIDGET_CONTROL 0
-sudo -n hda-verb /dev/snd/hwC0D0 0x1e GET_CONNECT_SEL 0
-```
+On this laptop, maximum `Mic Boost` produced silence and clipped artifacts on
+the built-in input. Start with boost at zero and Capture at 50%. Do not set the
+PipeWire input slider to 100%: it can raise hardware boost as well as capture gain.
+The low percentage shown by PipeWire reflects the combined hardware gain range.
 
 ## Input validation
 
@@ -41,7 +42,7 @@ cd ~/Projects/coffee_detector
 .venv/bin/python coffee_detector.py --input-device default --check-input 10
 ```
 
-A healthy check reports RMS and peak levels plus at least 20% active samples. The command fails when the stream produces no frames, sustained digital silence, or sparse clipped artifacts.
+The check reports RMS and peak levels plus the fraction of active samples. It fails when the stream produces no frames, sustained digital silence, or sparse clipped artifacts. Passing this check alone does not prove that the microphone hears sound: an unused analog input can produce noise that passes. Also verify a known sound through the microphone.
 
 Measure a live warm-up beep without saving audio or sending an alert:
 
@@ -66,14 +67,19 @@ amixer -c 0 sget Capture
 amixer -c 0 sget 'Mic Boost'
 ```
 
-Enable capture and maximum diagnostic gain:
+Set the tested built-in microphone gain:
 
 ```sh
-amixer -c 0 sset Capture 100% cap
-amixer -c 0 sset 'Mic Boost' 100%
+pactl set-source-volume alsa_input.pci-0000_00_1b.0.analog-stereo 6942
+pactl set-source-mute alsa_input.pci-0000_00_1b.0.analog-stereo 0
+amixer -c PCH sget 'Mic Boost'
+amixer -c PCH sget Capture
+sudo alsactl store PCH
 ```
 
-Reduce gain after input is working if normal roaster audio clips.
+The PulseAudio volume value `6942` is about 11% in the desktop UI. On this codec it sets Mic Boost to 0 dB and Capture to +7.5 dB (ALSA step 16). Setting only ALSA controls is not sufficient: WirePlumber can restore an older volume when it restarts. Use `pactl` so WirePlumber saves the route volume too.
+
+Keep Mic Boost at zero. Adjust Capture only if a real roaster test requires it, and check for clipping. Repeat the sound test after restarting the audio stack.
 
 ## Service validation
 
@@ -91,7 +97,7 @@ systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.ser
 systemctl --user restart coffee-detector.service
 ```
 
-The detector exits with an error when ffmpeg stops delivering frames or the input health window contains insufficient real samples. The systemd unit restarts it after five seconds, reapplies the external-microphone route after every start, and force-stops an unresponsive audio process after five seconds.
+The detector exits with an error when ffmpeg stops delivering frames or the input health window contains insufficient real samples. The systemd unit restarts it after five seconds and force-stops an unresponsive audio process after five seconds.
 
 ## Printer-safe reboot check
 

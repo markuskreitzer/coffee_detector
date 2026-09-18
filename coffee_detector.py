@@ -274,7 +274,13 @@ def send_pushover(message: str, title: str) -> None:
         raise RuntimeError("PUSHOVER_COFFEE_TOKEN and PUSHOVER_USER must be set")
 
     payload = urllib.parse.urlencode(
-        {"token": token, "user": user, "title": title, "message": message}
+        {
+            "token": token,
+            "user": user,
+            "title": title,
+            "message": message,
+            "priority": 1,
+        }
     ).encode()
     request = urllib.request.Request(
         "https://api.pushover.net/1/messages.json",

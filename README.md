@@ -167,7 +167,14 @@ systemctl --user status coffee-detector.service
 journalctl --user -u coffee-detector.service -f
 ```
 
-The service runs while the desktop user session is active, restarts after failures, uses PipeWire's default source, reapplies the ASUS X202E combo-jack microphone route after every start, and force-stops an unresponsive audio process after five seconds.
+The service runs while the desktop user session is active, restarts after failures, uses PipeWire's default source without changing the hardware microphone route, and force-stops an unresponsive audio process after five seconds.
+
+## Notification priority
+
+Roaster notifications use Pushover high priority (`1`). To hear them through
+iPhone silent mode or Do Not Disturb, enable **Critical Alerts for high-priority**
+in Pushover settings and allow Critical Alerts in iOS. These alerts do not use
+Pushover's repeating emergency priority.
 
 ## Security and recordings
 
